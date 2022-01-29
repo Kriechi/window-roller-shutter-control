@@ -16,22 +16,30 @@ const int WINDOW_3_B = D6;
 // B=LOW, A=HIGH => window shutter going up
 // A=LOW, B=HIGH => window shutter going down
 
+float DEFAULT_POSITION_TIME = 30.0;
+
 WiFiClient wifi_client;
 PubSubClient mqtt_client(wifi_client);
 unsigned int mqtt_reconnect_counter = 0;
 ESP8266WebServer server(80);
 Ticker deenergize_ticker[6];
 
+bool enabled = true;
+
 void setup_wifi();
 void setup_relays();
 void setup_webserver();
 void setup_ota();
-void handleRoot();
-void handleAction();
-void handleStop();
-void handleRestart();
-void callback(char *topic, byte *payload, unsigned int length);
+void handleHTTPRoot();
+void handleHTTPAction();
+void handleHTTPStop();
+void handleHTTPEnable();
+void handleHTTPDisable();
+void handleHTTPRestart();
+void mqttCallback(char *topic, byte *payload, unsigned int length);
 void reconnect();
+void action(char window, char direction);
+void action(char window, char direction, float position);
 void toggle_shutter(int inactive, int active);
 void toggle_shutter(int inactive, int active, float position);
 void deenergize(int active);
@@ -73,7 +81,7 @@ void setup()
   setup_relays();
 
   mqtt_client.setServer(mqtt_server, 1883);
-  mqtt_client.setCallback(callback);
+  mqtt_client.setCallback(mqttCallback);
   mqtt_reconnect_counter = 0;
 
   setup_webserver();
@@ -120,10 +128,12 @@ void setup_relays()
 
 void setup_webserver()
 {
-  server.on("/", handleRoot);
-  server.on("/action", handleAction);
-  server.on("/stop", handleStop);
-  server.on("/restart", handleRestart);
+  server.on("/", handleHTTPRoot);
+  server.on("/action", handleHTTPAction);
+  server.on("/stop", handleHTTPStop);
+  server.on("/enable", handleHTTPEnable);
+  server.on("/disable", handleHTTPDisable);
+  server.on("/restart", handleHTTPRestart);
   server.begin();
   Serial.println("HTTP server started");
 }
@@ -216,41 +226,51 @@ void reconnect()
 
 void action(char window, char direction)
 {
+  action(window, direction, DEFAULT_POSITION_TIME);
+}
+
+void action(char window, char direction, float position)
+{
+  if (!enabled)
+  {
+    return;
+  }
+
   if (window == '1' && direction == 'd')
   {
     Serial.println("Window 1 down...");
     mqtt_client.publish("window_shutter_status", "Window 1 down...");
-    toggle_shutter(WINDOW_1_A, WINDOW_1_B);
+    toggle_shutter(WINDOW_1_A, WINDOW_1_B, position);
   }
   else if (window == '1' && direction == 'u')
   {
     Serial.println("Window 1 up...");
     mqtt_client.publish("window_shutter_status", "Window 1 up...");
-    toggle_shutter(WINDOW_1_B, WINDOW_1_A);
+    toggle_shutter(WINDOW_1_B, WINDOW_1_A, position);
   }
   else if (window == '2' && direction == 'd')
   {
     Serial.println("Window 2 down...");
     mqtt_client.publish("window_shutter_status", "Window 2 down...");
-    toggle_shutter(WINDOW_2_A, WINDOW_2_B);
+    toggle_shutter(WINDOW_2_A, WINDOW_2_B, position);
   }
   else if (window == '2' && direction == 'u')
   {
     Serial.println("Window 2 up...");
     mqtt_client.publish("window_shutter_status", "Window 2 up...");
-    toggle_shutter(WINDOW_2_B, WINDOW_2_A);
+    toggle_shutter(WINDOW_2_B, WINDOW_2_A, position);
   }
   else if (window == '3' && direction == 'd')
   {
     Serial.println("Window 3 down...");
     mqtt_client.publish("window_shutter_status", "Window 3 down...");
-    toggle_shutter(WINDOW_3_A, WINDOW_3_B);
+    toggle_shutter(WINDOW_3_A, WINDOW_3_B, position);
   }
   else if (window == '3' && direction == 'u')
   {
     Serial.println("Window 3 up...");
     mqtt_client.publish("window_shutter_status", "Window 3 up...");
-    toggle_shutter(WINDOW_3_B, WINDOW_3_A);
+    toggle_shutter(WINDOW_3_B, WINDOW_3_A, position);
   }
 }
 
@@ -271,17 +291,20 @@ void action_stop()
   mqtt_client.publish("window_shutter_status", "stopped");
 }
 
-void handleRoot()
+void handleHTTPRoot()
 {
   // minify index.html and replace in between rawliteral here
-  const char *index_html = R"rawliteral(
-      <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><meta name="apple-mobile-web-app-capable" content="yes"><title>Window Roller Shutters</title><style>body{text-align:center;font-family:sans-serif;background:#2c2c2c}#main{text-align:center;display:inline-block;color:#f0f0f0;min-width:340px}table{width:100%}a{color:#f0f0f0;text-decoration:none}button{border:0;border-radius:.5rem;background:#25abf3;color:#f0f0f0;line-height:3rem;font-size:1.3rem;width:100%}button:hover{background:#1377ad}</style></head><body><div id="main"><h2>Window Roller Shutters</h2><table><tr><td colspan="3"><button class="action" name="preset_work_day">Work Day</button></td></tr><tr><td colspan="3"><button class="action" name="preset_normal_day">Day</button></td></tr></table><hr><table><tr><td><button class="action" name="1u">1 Up</button></td><td><button class="action" name="2u">2 Up</button></td><td><button class="action" name="3u">3 Up</button></td></tr><tr><td><button class="action" name="1d">1 Down</button></td><td><button class="action" name="2d">2 Down</button></td><td><button class="action" name="3d">3 Down</button></td></tr></table><hr><table><tr><td colspan="3"><button class="action" name="preset_night">Night</button></td></tr></table><hr><table><tr><td><button class="action" name="stop">Stop</button></td></tr></table><hr><p><a href="/restart">Restart</a></p><script>els = document.getElementsByClassName("action");Array.from(els).forEach((el) => {el.addEventListener("click", function (e) {var xhttp = new XMLHttpRequest();xhttp.open("GET", "/action?q=" + e.target.name, true);xhttp.send();});});</script></div></body></html>
+  String index_html = R"rawliteral(
+      <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><meta name="apple-mobile-web-app-capable" content="yes"><title>Window Roller Shutters</title><style>body{text-align:center;font-family:sans-serif;background:#2c2c2c}#main{text-align:center;display:inline-block;color:#f0f0f0;min-width:340px}table{width:100%}a{color:#f0f0f0;text-decoration:none}button{border:0;border-radius:.5rem;background:#25abf3;color:#f0f0f0;line-height:3rem;font-size:1.3rem;width:100%}button:hover{background:#1377ad}</style></head><body><div id="main"><h2>Window Roller Shutters</h2><table><tr><td colspan="3"><button class="action" name="preset_work_day">Work Day</button></td></tr><tr><td colspan="3"><button class="action" name="preset_normal_day">Day</button></td></tr></table><hr><table><tr><td><button class="action" name="1u">1 Up</button></td><td><button class="action" name="2u">2 Up</button></td><td><button class="action" name="3u">3 Up</button></td></tr><tr><td><button class="action" name="1d">1 Down</button></td><td><button class="action" name="2d">2 Down</button></td><td><button class="action" name="3d">3 Down</button></td></tr></table><hr><table><tr><td colspan="3"><button class="action" name="preset_night">Night</button></td></tr></table><hr><table><tr><td><button class="action" name="stop">Stop</button></td></tr></table><hr><table><tr><td><a href="{{enable_action}}"><button>{{enable_state}}</button></a></td></tr></table><hr><p><a href="/restart">Restart</a></p><script>els = document.getElementsByClassName("action");Array.from(els).forEach((el) => {el.addEventListener("click", function (e) {var xhttp = new XMLHttpRequest();xhttp.open("GET", "/action?q=" + e.target.name, true);xhttp.send();});});</script></div></body></html>
     )rawliteral";
-  server.sendHeader("Cache-Control", "max-age=2419200,immutable");
+
+  index_html.replace("{{enable_state}}", enabled ? "Disable (currently enabled)" : "Enable (currently disabled)");
+  index_html.replace("{{enable_action}}", enabled ? "disable" : "enable");
+
   server.send(200, "text/html", index_html);
 }
 
-void handleAction()
+void handleHTTPAction()
 {
   if (server.hasArg("q") && server.arg("q").length() == 2 && (server.arg("q").charAt(0) == '1' || server.arg("q").charAt(0) == '2' || server.arg("q").charAt(0) == '3'))
   {
@@ -314,20 +337,34 @@ void handleAction()
   }
 }
 
-void handleStop()
+void handleHTTPStop()
 {
   action_stop();
   server.send(200, "text/plain", "ok");
 }
 
-void handleRestart()
+void handleHTTPEnable()
+{
+  enabled = true;
+  Serial.println("Enabled all actions.");
+  handleHTTPRoot();
+}
+
+void handleHTTPDisable()
+{
+  enabled = false;
+  Serial.println("Disabled all actions.");
+  handleHTTPRoot();
+}
+
+void handleHTTPRestart()
 {
   server.send(200, "text/plain", "ok");
   Serial.println("Restarting ESP...");
   ESP.restart();
 }
 
-void callback(char *t, byte *p, unsigned int length)
+void mqttCallback(char *t, byte *p, unsigned int length)
 {
   String topic = String(t);
   String payload;
@@ -379,7 +416,7 @@ void callback(char *t, byte *p, unsigned int length)
 
 void toggle_shutter(int inactive, int active)
 {
-  toggle_shutter(inactive, active, 30.0);
+  toggle_shutter(inactive, active, DEFAULT_POSITION_TIME);
 }
 
 void toggle_shutter(int inactive, int active, float position)
@@ -406,23 +443,23 @@ void deenergize(int active)
 void preset_work_day()
 {
   mqtt_client.publish("window_shutter_status", "setting preset: work day...");
-  toggle_shutter(WINDOW_1_B, WINDOW_1_A);
-  toggle_shutter(WINDOW_2_B, WINDOW_2_A);
-  toggle_shutter(WINDOW_3_B, WINDOW_3_A, 16.0);
+  action('1', 'u');
+  action('2', 'u');
+  action('3', 'u', 16.0);
 }
 
 void preset_normal_day()
 {
   mqtt_client.publish("window_shutter_status", "setting preset: normal day...");
-  toggle_shutter(WINDOW_1_B, WINDOW_1_A);
-  toggle_shutter(WINDOW_2_B, WINDOW_2_A);
-  toggle_shutter(WINDOW_3_B, WINDOW_3_A);
+  action('1', 'u');
+  action('2', 'u');
+  action('3', 'u');
 }
 
 void preset_night()
 {
   mqtt_client.publish("window_shutter_status", "setting preset: night...");
-  toggle_shutter(WINDOW_1_A, WINDOW_1_B);
-  toggle_shutter(WINDOW_2_A, WINDOW_2_B);
-  toggle_shutter(WINDOW_3_A, WINDOW_3_B);
+  action('1', 'd');
+  action('2', 'd');
+  action('3', 'd');
 }
