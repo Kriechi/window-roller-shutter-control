@@ -24,7 +24,7 @@ unsigned int mqtt_reconnect_counter = 0;
 ESP8266WebServer server(80);
 Ticker deenergize_ticker[6];
 
-bool enabled = true;
+bool presets_mqtt_enabled = true;
 
 void setup_wifi();
 void setup_relays();
@@ -231,11 +231,6 @@ void action(char window, char direction)
 
 void action(char window, char direction, float position)
 {
-  if (!enabled)
-  {
-    return;
-  }
-
   if (window == '1' && direction == 'd')
   {
     Serial.println("Window 1 down...");
@@ -298,8 +293,8 @@ void handleHTTPRoot()
       <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><meta name="apple-mobile-web-app-capable" content="yes"><title>Window Roller Shutters</title><style>body{text-align:center;font-family:sans-serif;background:#2c2c2c}#main{text-align:center;display:inline-block;color:#f0f0f0;min-width:340px}table{width:100%}a{color:#f0f0f0;text-decoration:none}button{border:0;border-radius:.5rem;background:#25abf3;color:#f0f0f0;line-height:3rem;font-size:1.3rem;width:100%}button:hover{background:#1377ad}</style></head><body><div id="main"><h2>Window Roller Shutters</h2><table><tr><td colspan="3"><button class="action" name="preset_work_day">Work Day</button></td></tr><tr><td colspan="3"><button class="action" name="preset_normal_day">Day</button></td></tr></table><hr><table><tr><td><button class="action" name="1u">1 Up</button></td><td><button class="action" name="2u">2 Up</button></td><td><button class="action" name="3u">3 Up</button></td></tr><tr><td><button class="action" name="1d">1 Down</button></td><td><button class="action" name="2d">2 Down</button></td><td><button class="action" name="3d">3 Down</button></td></tr></table><hr><table><tr><td colspan="3"><button class="action" name="preset_night">Night</button></td></tr></table><hr><table><tr><td><button class="action" name="stop">Stop</button></td></tr></table><hr><table><tr><td><a href="{{enable_action}}"><button>{{enable_state}}</button></a></td></tr></table><hr><p><a href="/restart">Restart</a></p><script>els = document.getElementsByClassName("action");Array.from(els).forEach((el) => {el.addEventListener("click", function (e) {var xhttp = new XMLHttpRequest();xhttp.open("GET", "/action?q=" + e.target.name, true);xhttp.send();});});</script></div></body></html>
     )rawliteral";
 
-  index_html.replace("{{enable_state}}", enabled ? "Disable (currently enabled)" : "Enable (currently disabled)");
-  index_html.replace("{{enable_action}}", enabled ? "disable" : "enable");
+  index_html.replace("{{enable_state}}", presets_mqtt_enabled ? "Disable presets (currently enabled)" : "Enable presets (currently disabled)");
+  index_html.replace("{{enable_action}}", presets_mqtt_enabled ? "disable" : "enable");
 
   server.send(200, "text/html", index_html);
 }
@@ -345,14 +340,14 @@ void handleHTTPStop()
 
 void handleHTTPEnable()
 {
-  enabled = true;
+  presets_mqtt_enabled = true;
   Serial.println("Enabled all actions.");
   handleHTTPRoot();
 }
 
 void handleHTTPDisable()
 {
-  enabled = false;
+  presets_mqtt_enabled = false;
   Serial.println("Disabled all actions.");
   handleHTTPRoot();
 }
@@ -385,21 +380,24 @@ void mqttCallback(char *t, byte *p, unsigned int length)
   {
     Serial.println("Restarting ESP...");
     ESP.restart();
+    return;
   }
   else if (payload == "s" || payload == "st" || payload == "sto" || payload == "stop")
   {
     Serial.println("Stopping all window shutters...");
     action_stop();
+    return;
   }
-  else if (payload == "preset_work_day" || payload == "work_day" || payload == "work" || payload == "w")
+
+  if (presets_mqtt_enabled && (payload == "preset_work_day" || payload == "work_day" || payload == "work" || payload == "w"))
   {
     preset_work_day();
   }
-  else if (payload == "preset_normal_day" || payload == "normal_day" || payload == "normal" || payload == "up" || payload == "u")
+  else if (presets_mqtt_enabled && (payload == "preset_normal_day" || payload == "normal_day" || payload == "normal" || payload == "up" || payload == "u"))
   {
     preset_normal_day();
   }
-  else if (payload == "preset_night" || payload == "night" || payload == "down" || payload == "d")
+  else if (presets_mqtt_enabled && (payload == "preset_night" || payload == "night" || payload == "down" || payload == "d"))
   {
     preset_night();
   }
@@ -445,7 +443,7 @@ void preset_work_day()
   mqtt_client.publish("window_shutter_status", "setting preset: work day...");
   action('1', 'u');
   action('2', 'u');
-  action('3', 'u', 16.0);
+  action('3', 'u', 13.0);
 }
 
 void preset_normal_day()
