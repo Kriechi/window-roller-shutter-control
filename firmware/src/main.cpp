@@ -1,5 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <NTPClient.h>
 #include <PubSubClient.h>
 #include <ArduinoOTA.h>
 #include <Ticker.h>
@@ -18,10 +19,18 @@ const int WINDOW_3_B = D6;
 
 float DEFAULT_POSITION_TIME = 30.0;
 
-WiFiClient wifi_client;
+#include "cert.h"
+X509List cert(cert_ISRG_Root_X1);
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
+WiFiClientSecure wifi_client;
 PubSubClient mqtt_client(wifi_client);
 unsigned int mqtt_reconnect_counter = 0;
+
 ESP8266WebServer server(80);
+
 Ticker deenergize_ticker[6];
 
 bool presets_mqtt_enabled = true;
@@ -80,7 +89,9 @@ void setup()
 
   setup_relays();
 
-  mqtt_client.setServer(mqtt_server, 1883);
+  wifi_client.setTrustAnchors(&cert);
+  wifi_client.setInsecure();
+  mqtt_client.setServer(mqtt_server, mqtt_port);
   mqtt_client.setCallback(mqttCallback);
   mqtt_reconnect_counter = 0;
 
@@ -108,6 +119,11 @@ void setup_wifi()
   Serial.println("WiFi connected");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
+
+  timeClient.begin();
+  timeClient.forceUpdate();
+  delay(1000);
+  Serial.printf("NTP updated: %lu\n", timeClient.getEpochTime());
 }
 
 void setup_relays()
@@ -188,39 +204,46 @@ void setup_ota()
 
 void loop()
 {
+  ArduinoOTA.handle();
+
+  timeClient.update();
+
+  server.handleClient();
+
   if (!mqtt_client.connected())
   {
     reconnect();
   }
   mqtt_client.loop();
-  server.handleClient();
-  ArduinoOTA.handle();
 }
 
 void reconnect()
 {
-  // Loop until we're reconnected
-  while (!mqtt_client.connected())
+  if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "ESP8266Client-";
-    clientId += String(random(0xffff), HEX);
-    // Attempt to connect
-    if (mqtt_client.connect(clientId.c_str(), mqtt_username, mqtt_password))
-    {
-      mqtt_reconnect_counter += 1;
-      Serial.println(" connected.");
-      String msg = "Fiat Lux for the " + String(mqtt_reconnect_counter) + "th time! My IP is " + WiFi.localIP().toString() + " an I'm up for " + millis() + "millisec.";
-      mqtt_client.publish("window_shutter_status", msg.c_str());
-      mqtt_client.subscribe("window_shutter");
-    }
-    else
-    {
-      Serial.print("failed, rc=");
-      Serial.print(mqtt_client.state());
-      delay(5000);
-    }
+    setup_wifi();
+  }
+
+  wifi_client.setX509Time(timeClient.getEpochTime());
+
+  Serial.print("Attempting MQTT connection...");
+  // Create a random client ID
+  String clientId = "WindowShutter-";
+  clientId += String(random(0xffff), HEX);
+  // Attempt to connect
+  if (mqtt_client.connect(clientId.c_str(), mqtt_username, mqtt_password))
+  {
+    mqtt_reconnect_counter += 1;
+    Serial.println(" connected.");
+    String msg = "Fiat Lux for the " + String(mqtt_reconnect_counter) + "th time! My IP is " + WiFi.localIP().toString() + " an I'm up for " + millis() + "millisec.";
+    mqtt_client.publish("window_shutter_status", msg.c_str());
+    mqtt_client.subscribe("window_shutter");
+  }
+  else
+  {
+    Serial.print("failed, rc=");
+    Serial.print(mqtt_client.state());
+    delay(1000);
   }
 }
 

@@ -1,4 +1,5 @@
 .pio/
 .vscode/
 include/credentials.h
+include/cert.h
 src/index.min.html
